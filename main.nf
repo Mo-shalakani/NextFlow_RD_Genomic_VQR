@@ -30,6 +30,7 @@ if (params.index_genome) {
 if (params.fastqc) {
     include { FASTQC } from './modules/FASTQC'
 }
+include { TRIMMOMATIC } from './modules/readTrimming'
 include { sortBam } from './modules/sortBam'
 include { markDuplicates } from './modules/markDuplicates'
 include { indexBam } from './modules/indexBam'
@@ -91,12 +92,46 @@ workflow {
                 error "Unexpected row format in samplesheet: $row"
             }
         }
-    read_pairs_ch.view()
+    // read_pairs_ch.view()
 
     // Run FASTQC on read pairs
-    if (params.fastqc) {
-        FASTQC(read_pairs_ch)
-    }
+    // if (params.fastqc) {
+    //     FASTQC(read_pairs_ch)
+    // }
+
+    // Run read trimming on read pairs
+if (params.trim_reads) {
+    trimmed_reads = TRIMMOMATIC(read_pairs_ch)
+    trimmed_reads = trimmed_reads
+        .flatMap { sample_id, files ->
+            def output = []
+
+            // Extract paired reads
+            def read1_paired = files.find { it.getName().contains('_R1_paired.fastq') }
+            def read2_paired = files.find { it.getName().contains('_R2_paired.fastq') }
+            if (read1_paired && read2_paired) {
+                output << tuple(sample_id, [read1_paired, read2_paired])
+            }
+
+            // Extract unpaired reads
+            def read1_unpaired = files.find { it.getName().contains('_R1_unpaired.fastq') }
+            def read2_unpaired = files.find { it.getName().contains('_R2_unpaired.fastq') }
+            if (read1_paired && read2_paired) {
+                output << tuple(sample_id, [read1_unpaired, read2_unpaired])
+            return output
+            }
+        }
+
+        merged_reads_ch = read_pairs_ch
+            .mix(trimmed_reads)
+
+
+        merged_reads_ch.view()
+
+        // if (params.fastqc) {
+        //     FASTQC(merged_reads_ch)
+        // }
+}
 
     // Align reads to the indexed genome
     if (params.aligner == 'bwa-mem') {
@@ -247,13 +282,29 @@ workflow FASTQC_only {
                 error "Unexpected row format in samplesheet: $row"
             }
         }
-    read_pairs_ch.view()
 
     if (params.fastqc) {
         FASTQC(read_pairs_ch)
     }
 }
 
+workflow readTrimming_only {
+    // Set channel to gather read_pairs
+    read_pairs_ch = Channel
+        .fromPath(params.samplesheet)
+        .splitCsv(sep: '\t')
+        .map { row ->
+            if (row.size() == 4) {
+                tuple(row[0], [row[1], row[2]])
+            } else if (row.size() == 3) {
+                tuple(row[0], [row[1]])
+            } else {
+                error "Unexpected row format in samplesheet: $row"
+            }
+        }
+
+    TRIMMOMATIC(read_pairs_ch)
+}
 workflow.onComplete {
     log.info ( workflow.success ? "\nworkflow is done!\n" : "Oops .. something went wrong" )
 }
